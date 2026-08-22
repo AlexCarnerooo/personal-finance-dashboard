@@ -14,6 +14,7 @@ load_dotenv()
 
 APPLICATION_ID = os.getenv("ENABLE_BANKING_APPLICATION_ID")
 PRIVATE_KEY_PATH = os.getenv("ENABLE_BANKING_PRIVATE_KEY_PATH")
+REDIRECT_URL = os.getenv("ENABLE_BANKING_REDIRECT_URL")
 
 private_key = Path(PRIVATE_KEY_PATH).read_text()
 
@@ -60,6 +61,90 @@ def get_spanish_banks():
     response = requests.get(
         "https://api.enablebanking.com/aspsps",
         params={"country": "ES"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+def start_revolut_authorization():
+    token = create_jwt()
+
+    payload = {
+        "access": {
+            "valid_until": (
+                datetime.now(timezone.utc) + timedelta(days=10)
+            ).isoformat()
+        },
+        "aspsp": {
+            "name": "Revolut",
+            "country": "ES"
+        },
+        "state": "personal-finance-dashboard",
+        "redirect_url": REDIRECT_URL,
+        "psu_type": "personal"
+    }
+
+    response = requests.post(
+        "https://api.enablebanking.com/auth",
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+def create_session(code: str):
+    token = create_jwt()
+
+    response = requests.post(
+        "https://api.enablebanking.com/sessions",
+        json={"code": code},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+def get_account_balances(account_uid: str):
+    token = create_jwt()
+
+    response = requests.get(
+        f"https://api.enablebanking.com/accounts/{account_uid}/balances",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+def get_account_transactions(account_uid: str):
+    token = create_jwt()
+
+    response = requests.get(
+        f"https://api.enablebanking.com/accounts/{account_uid}/transactions",
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
