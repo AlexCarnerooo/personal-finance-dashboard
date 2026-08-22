@@ -73,7 +73,7 @@ def get_spanish_banks():
     return response.json()
 
 
-def start_revolut_authorization():
+def start_authorization(bank_name: str):
     token = create_jwt()
 
     payload = {
@@ -83,7 +83,7 @@ def start_revolut_authorization():
             ).isoformat()
         },
         "aspsp": {
-            "name": "Revolut",
+            "name": bank_name,
             "country": "ES"
         },
         "state": "personal-finance-dashboard",
