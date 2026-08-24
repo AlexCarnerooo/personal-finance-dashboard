@@ -55,6 +55,7 @@ class Transaction(Base):
     description: Mapped[str | None] = mapped_column(String, nullable=True)
 
     direction: Mapped[str] = mapped_column(String)
+    flow_type: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str | None] = mapped_column(String, nullable=True)
     transaction_type: Mapped[str | None] = mapped_column(String, nullable=True)
     category: Mapped[str | None] = mapped_column(String, nullable=True)

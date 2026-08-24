@@ -70,6 +70,27 @@ def save_connection(session_id: str):
 
         db.commit()
 
+def get_flow_type(amount, merchant_name, description):
+    merchant = (merchant_name or "").lower()
+    description = (description or "").lower()
+
+    is_self_transfer = (
+        "alexandre carnero" in merchant
+        or "alexandre carnero" in description
+    )
+
+    if is_self_transfer:
+        return "internal_transfer"
+
+    if amount < 0:
+        return "expense"
+
+    if amount > 0:
+        return "income"
+
+    return None
+
+
 def sync_account_transactions(account_uid: str):
     data = get_account_transactions(account_uid)
     transactions = data.get("transactions", [])
@@ -126,6 +147,7 @@ def sync_account_transactions(account_uid: str):
                 merchant_name=merchant_name,
                 description=description,
                 direction=direction,
+                flow_type=flow_type,
                 status=tx.get("status"),
                 transaction_type=bank_code.get("code"),
                 category=None,
@@ -178,5 +200,34 @@ def sync_account_balance(account_uid: str):
                 reference_date=reference_date,
             )
             db.add(balance)
+
+        db.commit()
+
+def classify_transactions():
+    with SessionLocal() as db:
+        transactions = db.query(Transaction).all()
+
+        for tx in transactions:
+            merchant = (tx.merchant_name or "").lower()
+            description = (tx.description or "").lower()
+            flow_type = get_flow_type(
+                amount,
+                merchant_name,
+                description,
+            )
+
+            is_self_transfer = (
+                "alexandre carnero" in merchant
+                or "alexandre carnero" in description
+            )
+
+            if is_self_transfer:
+                tx.flow_type = "internal_transfer"
+            elif tx.amount < 0:
+                tx.flow_type = "expense"
+            elif tx.amount > 0:
+                tx.flow_type = "income"
+            else:
+                tx.flow_type = None
 
         db.commit()
