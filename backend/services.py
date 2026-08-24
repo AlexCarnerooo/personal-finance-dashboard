@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from backend.database import SessionLocal
 from backend.enable_banking import get_account_balances, get_session
-from backend.models import Account, BankConnection, Transaction, Balance
+from backend.models import Account, BankConnection, Transaction
 from backend.enable_banking import (
     get_account_balances,
     get_account_transactions,
@@ -164,6 +164,26 @@ def sync_all_accounts():
 
     for account_uid in account_uids:
         sync_account_transactions(account_uid)
+
+        balance_data = get_account_balances(account_uid)
+        balances = balance_data.get("balances", [])
+
+        if not balances:
+            continue
+
+        balance = balances[0]
+        amount = Decimal(balance["balance_amount"]["amount"])
+
+        with SessionLocal() as db:
+            account = db.scalar(
+                select(Account).where(Account.uid == account_uid)
+            )
+
+            if account:
+                account.current_balance = amount
+                account.balance_updated_at = datetime.utcnow()
+
+            db.commit()
 
 def sync_account_balance(account_uid: str):
     data = get_account_balances(account_uid)

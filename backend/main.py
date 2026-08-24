@@ -4,32 +4,47 @@ from backend.services import sync_all_accounts
 from backend.database import SessionLocal
 from backend.models import Account, Transaction
 
-from backend.enable_banking import get_account_balances 
 
 from datetime import datetime
 
+from fastapi.middleware.cors import CORSMiddleware
+
 
 app = FastAPI()
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def root():
     return {"status": "ok"}
 
 
-@app.get("/auth/callback")
-def auth_callback(
-    code: str | None = Query(default=None),
-    state: str | None = Query(default=None),
-    error: str | None = Query(default=None),
-    error_description: str | None = Query(default=None),
-):
-    return {
-        "code": code,
-        "state": state,
-        "error": error,
-        "error_description": error_description,
-    }
+@app.get("/api/accounts")
+def get_accounts():
+    with SessionLocal() as db:
+        accounts = db.query(Account).all()
+
+        return [
+            {
+                "id": account.id,
+                "bank": account.bank,
+                "uid": account.uid,
+                "name": account.name,
+                "currency": account.currency,
+                "balance": (
+                    float(account.current_balance)
+                    if account.current_balance is not None
+                    else None
+                ),
+                "balance_updated_at": account.balance_updated_at,
+            }
+            for account in accounts
+        ]
 
 @app.post("/api/sync")
 def sync_all():
@@ -66,36 +81,6 @@ def get_transactions():
             for tx in transactions
         ]
 
-@app.get("/api/accounts")
-def get_accounts():
-    with SessionLocal() as db:
-        accounts = db.query(Account).all()
-
-        result = []
-
-        for account in accounts:
-            balance_data = get_account_balances(account.uid)
-            balances = balance_data.get("balances", [])
-
-            balance = None
-
-            if balances:
-                balance = float(
-                    balances[0]["balance_amount"]["amount"]
-                )
-
-            result.append(
-                {
-                    "id": account.id,
-                    "bank": account.bank,
-                    "uid": account.uid,
-                    "name": account.name,
-                    "currency": account.currency,
-                    "balance": balance,
-                }
-            )
-
-        return result
 
 @app.get("/api/dashboard")
 def get_dashboard():
@@ -106,19 +91,12 @@ def get_dashboard():
     with SessionLocal() as db:
         accounts = db.query(Account).all()
 
-        total_balance_eur = 0.0
-
-        for account in accounts:
-            if account.currency != "EUR":
-                continue
-
-            balance_data = get_account_balances(account.uid)
-            balances = balance_data.get("balances", [])
-
-            if balances:
-                total_balance_eur += float(
-                    balances[0]["balance_amount"]["amount"]
-                )
+        total_balance_eur = sum(
+            float(account.current_balance)
+            for account in accounts
+            if account.currency == "EUR"
+            and account.current_balance is not None
+        )
 
         transactions = db.query(Transaction).all()
 

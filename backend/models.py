@@ -17,6 +17,16 @@ class Account(Base):
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     currency: Mapped[str] = mapped_column(String)
 
+    current_balance: Mapped[Decimal | None] = mapped_column(
+        Numeric(14, 2),
+        nullable=True,
+    )
+
+    balance_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -65,7 +75,7 @@ class Transaction(Base):
         default=datetime.utcnow,
     )
 
-class Balance(Base):
+'''class Balance(Base):
     __tablename__ = "balances"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -79,4 +89,4 @@ class Balance(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
-    )
+    )'''
