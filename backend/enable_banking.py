@@ -155,3 +155,20 @@ def get_account_transactions(account_uid: str):
     response.raise_for_status()
 
     return response.json()
+
+def get_session(session_id: str):
+    token = create_jwt()
+
+    response = requests.get(
+        f"https://api.enablebanking.com/sessions/{session_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+    

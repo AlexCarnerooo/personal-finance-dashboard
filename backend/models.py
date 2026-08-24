@@ -20,3 +20,18 @@ class Account(Base):
         DateTime,
         default=datetime.utcnow,
     )
+
+class BankConnection(Base):
+    __tablename__ = "bank_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    bank: Mapped[str] = mapped_column(String)
+    session_id: Mapped[str] = mapped_column(String, unique=True)
+    status: Mapped[str] = mapped_column(String)
+    valid_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
