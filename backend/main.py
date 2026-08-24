@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Query
+from backend.services import sync_all_accounts
 
 app = FastAPI()
 
@@ -20,4 +21,13 @@ def auth_callback(
         "state": state,
         "error": error,
         "error_description": error_description,
+    }
+
+@app.post("/api/sync")
+def sync_all():
+    sync_all_accounts()
+
+    return {
+        "status": "ok",
+        "message": "All accounts synchronized",
     }

@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 from datetime import datetime, timedelta, timezone
 
+
+
 import jwt
 
 import requests
@@ -171,4 +173,3 @@ def get_session(session_id: str):
     response.raise_for_status()
 
     return response.json()
-    
