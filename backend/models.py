@@ -63,3 +63,19 @@ class Transaction(Base):
         DateTime,
         default=datetime.utcnow,
     )
+
+class Balance(Base):
+    __tablename__ = "balances"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    account_uid: Mapped[str] = mapped_column(String, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    currency: Mapped[str] = mapped_column(String)
+    balance_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    reference_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
