@@ -4,6 +4,7 @@ import "./App.css";
 function App() {
   const [dashboard, setDashboard] = useState(null);
   const [accounts, setAccounts] = useState([]);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   useEffect(() => {
     fetch("http://127.0.0.1:8000/api/dashboard")
@@ -19,6 +20,10 @@ function App() {
 
 
   const handleSync = async () => {
+    if (isSyncing) return;
+
+    setIsSyncing(true);
+
     try {
       await fetch("http://127.0.0.1:8000/api/sync", {
         method: "POST",
@@ -38,7 +43,47 @@ function App() {
       setAccounts(accountsData);
     } catch (error) {
       console.error(error);
+    } finally {
+      setIsSyncing(false);
     }
+  };
+
+  const getLastUpdatedText = () => {
+    const dates = accounts
+      .map((account) => account.balance_updated_at)
+      .filter(Boolean)
+      .map((date) => new Date(date));
+
+    if (dates.length === 0) {
+      return "Sin sincronizar";
+    }
+
+    const latestDate = new Date(
+      Math.max(...dates.map((date) => date.getTime()))
+    );
+
+    const diffMs = Date.now() - latestDate.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
+
+    if (diffMinutes < 1) {
+      return "Actualizado hace menos de 1 min";
+    }
+
+    if (diffMinutes === 1) {
+      return "Actualizado hace 1 min";
+    }
+
+    if (diffMinutes < 60) {
+      return `Actualizado hace ${diffMinutes} min`;
+    }
+
+    const diffHours = Math.floor(diffMinutes / 60);
+
+    if (diffHours === 1) {
+      return "Actualizado hace 1 h";
+    }
+
+    return `Actualizado hace ${diffHours} h`;
   };
 
   if (!dashboard) {
@@ -57,13 +102,20 @@ function App() {
           <h1>Dashboard</h1>
         </div>
 
-        <button className="sync-button" onClick={handleSync}>
-          Actualizar
+        <button
+          className="sync-button"
+          onClick={handleSync}
+          disabled={isSyncing}
+        >
+          {isSyncing ? "Actualizando..." : "Actualizar"}
         </button>
+
+
       </header>
 
       <main className="dashboard">
         <section className="hero-card">
+          
           <p>Patrimonio disponible</p>
 
           <h2>
@@ -71,9 +123,11 @@ function App() {
               ? `${dashboard.total_balance_eur.toFixed(2)} €`
               : "— €"}
           </h2>
+          <span>{getLastUpdatedText()}</span>
 
           {!hasAnyBalance && (
             <span>Saldo pendiente de sincronizar</span>
+            
           )}
         </section>
 
@@ -118,7 +172,9 @@ function App() {
           </div>
 
           <div className="accounts-grid">
-            {accounts.map((account) => (
+            {accounts
+              .filter((account) => account.currency !== "HUF")
+              .map((account) => (
               <article className="account-card" key={account.id}>
                 <div className="account-top">
                   <strong>{account.bank}</strong>
