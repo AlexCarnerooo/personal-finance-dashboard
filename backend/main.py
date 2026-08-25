@@ -48,13 +48,14 @@ def get_accounts():
 
 @app.post("/api/sync")
 def sync_all():
-    sync_all_accounts()
+    results = sync_all_accounts()
 
     return {
         "status": "ok",
-        "message": "All accounts synchronized",
+        "results": results,
     }
 
+    
 @app.get("/api/transactions")
 def get_transactions():
     with SessionLocal() as db:

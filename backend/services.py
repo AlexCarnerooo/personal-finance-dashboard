@@ -1,17 +1,17 @@
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 
 from backend.database import SessionLocal
-from backend.enable_banking import get_account_balances, get_session
-from backend.models import Account, BankConnection, Transaction
 from backend.enable_banking import (
     get_account_balances,
     get_account_transactions,
     get_session,
 )
-from decimal import Decimal
+from backend.models import Account, BankConnection, Transaction
 
+from requests import HTTPError
 
 def save_connection(session_id: str):
     session_data = get_session(session_id)
@@ -131,6 +131,11 @@ def sync_account_transactions(account_uid: str):
 
             remittance = tx.get("remittance_information") or []
             description = " ".join(remittance) if remittance else None
+            flow_type = get_flow_type(
+                amount,
+                merchant_name,
+                description,
+            )
 
             bank_code = tx.get("bank_transaction_code") or {}
 
@@ -158,96 +163,80 @@ def sync_account_transactions(account_uid: str):
         db.commit()
 
 def sync_all_accounts():
+    results = []
+
     with SessionLocal() as db:
         accounts = db.query(Account).all()
         account_uids = [account.uid for account in accounts]
 
     for account_uid in account_uids:
-        sync_account_transactions(account_uid)
+        account_result = {
+            "account_uid": account_uid,
+            "transactions": "pending",
+            "balance": "pending",
+        }
 
-        balance_data = get_account_balances(account_uid)
-        balances = balance_data.get("balances", [])
+        try:
+            sync_account_transactions(account_uid)
+            account_result["transactions"] = "ok"
+        except HTTPError as error:
+            status_code = error.response.status_code if error.response else None
 
-        if not balances:
-            continue
+            if status_code == 429:
+                account_result["transactions"] = "rate_limited"
+            else:
+                account_result["transactions"] = "error"
 
-        balance = balances[0]
-        amount = Decimal(balance["balance_amount"]["amount"])
+        try:
+            balance_data = get_account_balances(account_uid)
+            balances = balance_data.get("balances", [])
 
-        with SessionLocal() as db:
-            account = db.scalar(
-                select(Account).where(Account.uid == account_uid)
-            )
+            if balances:
+                balance = balances[0]
+                amount = Decimal(
+                    balance["balance_amount"]["amount"]
+                )
 
-            if account:
-                account.current_balance = amount
-                account.balance_updated_at = datetime.utcnow()
+                with SessionLocal() as db:
+                    account = db.scalar(
+                        select(Account).where(
+                            Account.uid == account_uid
+                        )
+                    )
 
-            db.commit()
+                    if account:
+                        account.current_balance = amount
+                        account.balance_updated_at = datetime.utcnow()
 
-def sync_account_balance(account_uid: str):
-    data = get_account_balances(account_uid)
-    balances = data.get("balances", [])
+                    db.commit()
 
-    if not balances:
-        return
+                account_result["balance"] = "ok"
+            else:
+                account_result["balance"] = "no_data"
 
-    balance_data = balances[0]
-    amount_data = balance_data["balance_amount"]
+        except HTTPError as error:
+            status_code = error.response.status_code if error.response else None
 
-    reference_date = balance_data.get("reference_date")
-    if reference_date:
-        reference_date = datetime.fromisoformat(reference_date)
+            if status_code == 429:
+                account_result["balance"] = "rate_limited"
+            else:
+                account_result["balance"] = "error"
 
-    with SessionLocal() as db:
-        existing_balance = db.scalar(
-            select(Balance).where(
-                Balance.account_uid == account_uid
-            )
-        )
+        results.append(account_result)
 
-        if existing_balance:
-            existing_balance.amount = Decimal(amount_data["amount"])
-            existing_balance.currency = amount_data["currency"]
-            existing_balance.balance_type = balance_data.get("balance_type")
-            existing_balance.reference_date = reference_date
-        else:
-            balance = Balance(
-                account_uid=account_uid,
-                amount=Decimal(amount_data["amount"]),
-                currency=amount_data["currency"],
-                balance_type=balance_data.get("balance_type"),
-                reference_date=reference_date,
-            )
-            db.add(balance)
+    return results
 
-        db.commit()
+
 
 def classify_transactions():
     with SessionLocal() as db:
         transactions = db.query(Transaction).all()
 
         for tx in transactions:
-            merchant = (tx.merchant_name or "").lower()
-            description = (tx.description or "").lower()
-            flow_type = get_flow_type(
-                amount,
-                merchant_name,
-                description,
+            tx.flow_type = get_flow_type(
+                tx.amount,
+                tx.merchant_name,
+                tx.description,
             )
-
-            is_self_transfer = (
-                "alexandre carnero" in merchant
-                or "alexandre carnero" in description
-            )
-
-            if is_self_transfer:
-                tx.flow_type = "internal_transfer"
-            elif tx.amount < 0:
-                tx.flow_type = "expense"
-            elif tx.amount > 0:
-                tx.flow_type = "income"
-            else:
-                tx.flow_type = None
 
         db.commit()

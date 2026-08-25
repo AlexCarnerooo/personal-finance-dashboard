@@ -17,6 +17,30 @@ function App() {
       .catch((error) => console.error(error));
   }, []);
 
+
+  const handleSync = async () => {
+    try {
+      await fetch("http://127.0.0.1:8000/api/sync", {
+        method: "POST",
+      });
+
+      const dashboardResponse = await fetch(
+        "http://127.0.0.1:8000/api/dashboard"
+      );
+      const dashboardData = await dashboardResponse.json();
+
+      const accountsResponse = await fetch(
+        "http://127.0.0.1:8000/api/accounts"
+      );
+      const accountsData = await accountsResponse.json();
+
+      setDashboard(dashboardData);
+      setAccounts(accountsData);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
   if (!dashboard) {
     return <div className="loading">Cargando...</div>;
   }
@@ -33,7 +57,7 @@ function App() {
           <h1>Dashboard</h1>
         </div>
 
-        <button className="sync-button">
+        <button className="sync-button" onClick={handleSync}>
           Actualizar
         </button>
       </header>
@@ -148,6 +172,8 @@ function App() {
                     {transaction.amount > 0 ? "+" : ""}
                     {transaction.amount.toFixed(2)}{" "}
                     {transaction.currency}
+
+                    
                   </strong>
                 </div>
               )
