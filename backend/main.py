@@ -23,6 +23,20 @@ app.add_middleware(
 def root():
     return {"status": "ok"}
 
+@app.get("/auth/callback")
+def auth_callback(
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+):
+    return {
+        "code": code,
+        "state": state,
+        "error": error,
+        "error_description": error_description,
+    }
+
 
 @app.get("/api/accounts")
 def get_accounts():
@@ -54,7 +68,6 @@ def sync_all():
         "status": "ok",
         "results": results,
     }
-
     
 @app.get("/api/transactions")
 def get_transactions():
