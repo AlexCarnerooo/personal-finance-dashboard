@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Query
-from backend.services import sync_all_accounts
+from backend.services import save_connection, sync_all_accounts
+from backend.enable_banking import create_session, start_authorization
 
 from backend.database import SessionLocal
 from backend.models import Account, Transaction
@@ -23,6 +24,11 @@ app.add_middleware(
 def root():
     return {"status": "ok"}
 
+@app.post("/api/banks/{bank_name}/authorize")
+def authorize_bank(bank_name: str):
+    return start_authorization(bank_name)
+
+
 @app.get("/auth/callback")
 def auth_callback(
     code: str | None = Query(default=None),
@@ -30,11 +36,36 @@ def auth_callback(
     error: str | None = Query(default=None),
     error_description: str | None = Query(default=None),
 ):
+    if error or not code:
+        return {
+            "code": code,
+            "state": state,
+            "error": error,
+            "error_description": error_description,
+        }
+
+    session_data = create_session(code)
+    session_id = session_data.get("session_id")
+
+    if not session_id:
+        return {
+            "code": code,
+            "state": state,
+            "error": "missing_session_id",
+            "error_description": (
+                "La respuesta de create_session no incluyó session_id"
+            ),
+        }
+
+    save_connection(session_id)
+
     return {
         "code": code,
         "state": state,
-        "error": error,
-        "error_description": error_description,
+        "error": None,
+        "error_description": None,
+        "session_id": session_id,
+        "status": "connected",
     }
 
 

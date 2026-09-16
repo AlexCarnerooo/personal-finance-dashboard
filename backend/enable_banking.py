@@ -75,13 +75,32 @@ def get_spanish_banks():
     return response.json()
 
 
+def get_max_consent_validity_seconds(bank_name: str) -> int:
+    banks = get_spanish_banks()
+    aspsps = banks.get("aspsps", banks) if isinstance(banks, dict) else banks
+
+    for aspsp in aspsps:
+        if aspsp.get("name") == bank_name:
+            max_validity = aspsp.get("maximum_consent_validity")
+
+            if max_validity:
+                return int(max_validity)
+
+    raise ValueError(
+        f"No se encontró maximum_consent_validity para el ASPSP '{bank_name}'"
+    )
+
+
 def start_authorization(bank_name: str):
     token = create_jwt()
+
+    max_validity_seconds = get_max_consent_validity_seconds(bank_name)
 
     payload = {
         "access": {
             "valid_until": (
-                datetime.now(timezone.utc) + timedelta(days=10)
+                datetime.now(timezone.utc)
+                + timedelta(seconds=max_validity_seconds)
             ).isoformat()
         },
         "aspsp": {

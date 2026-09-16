@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -16,6 +16,12 @@ class Account(Base):
     uid: Mapped[str] = mapped_column(String, unique=True)
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     currency: Mapped[str] = mapped_column(String)
+
+    identification_hash: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        unique=True,
+    )
 
     current_balance: Mapped[Decimal | None] = mapped_column(
         Numeric(14, 2),
@@ -46,7 +52,28 @@ class BankConnection(Base):
         DateTime,
         default=datetime.utcnow,
     )
-    
+
+
+class AccountExternalId(Base):
+    __tablename__ = "account_external_ids"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id"),
+        index=True,
+    )
+    external_uid: Mapped[str] = mapped_column(String, unique=True)
+
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+
 
 class Transaction(Base):
     __tablename__ = "transactions"

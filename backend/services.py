@@ -9,7 +9,7 @@ from backend.enable_banking import (
     get_account_transactions,
     get_session,
 )
-from backend.models import Account, BankConnection, Transaction
+from backend.models import Account, AccountExternalId, BankConnection, Transaction
 
 from requests import HTTPError
 
@@ -24,6 +24,13 @@ def save_connection(session_id: str):
         valid_until = datetime.fromisoformat(
             valid_until.replace("Z", "+00:00")
         )
+
+    accounts_data = session_data.get("accounts_data", [])
+    identification_hash_by_uid = {
+        entry["uid"]: entry.get("identification_hash")
+        for entry in accounts_data
+        if entry.get("uid")
+    }
 
     with SessionLocal() as db:
         existing_connection = db.scalar(
@@ -50,23 +57,61 @@ def save_connection(session_id: str):
             if balance_list:
                 currency = balance_list[0]["balance_amount"]["currency"]
 
-            existing_account = db.scalar(
-                select(Account).where(
-                    Account.uid == account_uid
-                )
-            )
+            identification_hash = identification_hash_by_uid.get(account_uid)
 
-            if not existing_account:
+            # Identidad estable primero (sobrevive a reautorizaciones);
+            # el uid de sesión solo como fallback para cuentas antiguas
+            # que todavía no tengan identification_hash guardado.
+            account = None
+
+            if identification_hash:
+                account = db.scalar(
+                    select(Account).where(
+                        Account.identification_hash == identification_hash
+                    )
+                )
+
+            if not account:
+                account = db.scalar(
+                    select(Account).where(Account.uid == account_uid)
+                )
+
+            if not account:
                 account = Account(
                     bank=bank_name,
                     uid=account_uid,
                     name=None,
                     currency=currency,
+                    identification_hash=identification_hash,
                 )
                 db.add(account)
+                db.flush()
             else:
-                existing_account.bank = bank_name
-                existing_account.currency = currency
+                account.bank = bank_name
+                account.currency = currency
+                account.uid = account_uid
+                if identification_hash:
+                    account.identification_hash = identification_hash
+
+            now = datetime.utcnow()
+
+            external_id_link = db.scalar(
+                select(AccountExternalId).where(
+                    AccountExternalId.external_uid == account_uid
+                )
+            )
+
+            if not external_id_link:
+                db.add(
+                    AccountExternalId(
+                        account_id=account.id,
+                        external_uid=account_uid,
+                        first_seen=now,
+                        last_seen=now,
+                    )
+                )
+            else:
+                external_id_link.last_seen = now
 
         db.commit()
 
@@ -226,6 +271,97 @@ def sync_all_accounts():
 
     return results
 
+
+
+def backfill_identification_hashes():
+    """Rellena identification_hash y account_external_ids para cuentas
+    creadas antes de que existiera esta identidad estable, usando
+    accounts_data de las BankConnection ya guardadas (incluidas las
+    cerradas). No toca Transaction en ningún caso."""
+
+    with SessionLocal() as db:
+        connections = [
+            (connection.session_id, connection.bank)
+            for connection in db.query(BankConnection).all()
+        ]
+
+    results = []
+
+    for session_id, bank in connections:
+        try:
+            session_data = get_session(session_id)
+        except HTTPError as error:
+            status_code = error.response.status_code if error.response else None
+            results.append({
+                "session_id": session_id,
+                "bank": bank,
+                "uid": None,
+                "status": f"session_fetch_error_{status_code}",
+            })
+            continue
+
+        accounts_data = session_data.get("accounts_data", [])
+
+        with SessionLocal() as db:
+            for entry in accounts_data:
+                uid = entry.get("uid")
+                identification_hash = entry.get("identification_hash")
+
+                if not uid or not identification_hash:
+                    results.append({
+                        "session_id": session_id,
+                        "bank": bank,
+                        "uid": uid,
+                        "status": "missing_uid_or_hash",
+                    })
+                    continue
+
+                account = db.scalar(
+                    select(Account).where(Account.uid == uid)
+                )
+
+                if not account:
+                    results.append({
+                        "session_id": session_id,
+                        "bank": bank,
+                        "uid": uid,
+                        "status": "account_not_found",
+                    })
+                    continue
+
+                account.identification_hash = identification_hash
+
+                now = datetime.utcnow()
+
+                external_id_link = db.scalar(
+                    select(AccountExternalId).where(
+                        AccountExternalId.external_uid == uid
+                    )
+                )
+
+                if not external_id_link:
+                    db.add(
+                        AccountExternalId(
+                            account_id=account.id,
+                            external_uid=uid,
+                            first_seen=now,
+                            last_seen=now,
+                        )
+                    )
+                else:
+                    external_id_link.last_seen = now
+
+                results.append({
+                    "session_id": session_id,
+                    "bank": bank,
+                    "uid": uid,
+                    "account_id": account.id,
+                    "status": "ok",
+                })
+
+            db.commit()
+
+    return results
 
 
 def classify_transactions():
