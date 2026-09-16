@@ -49,6 +49,12 @@ input {
   text-transform: uppercase;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .sync-button {
   border: 0;
   border-radius: 12px;
@@ -68,6 +74,32 @@ input {
 .sync-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.privacy-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 12px 16px;
+
+  background: white;
+  color: #111827;
+
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.privacy-toggle:hover {
+  border-color: #9ca3af;
+}
+
+.privacy-toggle.active {
+  border-color: #111827;
+  background: #111827;
+  color: white;
 }
 
 .dashboard {
