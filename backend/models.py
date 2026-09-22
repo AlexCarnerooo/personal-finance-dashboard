@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.database import Base
@@ -77,11 +77,25 @@ class AccountExternalId(Base):
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "external_id",
+            name="uq_transactions_account_id_external_id",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
+    # Identidad lógica estable (sobrevive a reautorizaciones). Ver Account.
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id"),
+        index=True,
+    )
+    # UID de Enable Banking con el que se recibió esta transacción.
+    # Solo trazabilidad: NO es identidad, cambia entre reautorizaciones.
     account_uid: Mapped[str] = mapped_column(String, index=True)
-    external_id: Mapped[str] = mapped_column(String, unique=True)
+    external_id: Mapped[str] = mapped_column(String)
 
     booking_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

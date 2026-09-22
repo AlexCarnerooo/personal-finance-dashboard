@@ -136,7 +136,33 @@ def get_flow_type(amount, merchant_name, description):
     return None
 
 
+class UnresolvedAccountError(Exception):
+    """account_uid no tiene una Account lógica asociada en
+    account_external_ids. No se debe sincronizar a ciegas: forzaría
+    transacciones huérfanas sin account_id resoluble."""
+
+
+def resolve_account_id(account_uid: str) -> int:
+    with SessionLocal() as db:
+        link = db.scalar(
+            select(AccountExternalId).where(
+                AccountExternalId.external_uid == account_uid
+            )
+        )
+
+    if not link:
+        raise UnresolvedAccountError(
+            f"account_uid '{account_uid}' no está registrado en "
+            "account_external_ids; no se puede resolver una Account "
+            "lógica estable para sincronizar sus transacciones."
+        )
+
+    return link.account_id
+
+
 def sync_account_transactions(account_uid: str):
+    account_id = resolve_account_id(account_uid)
+
     data = get_account_transactions(account_uid)
     transactions = data.get("transactions", [])
 
@@ -149,7 +175,8 @@ def sync_account_transactions(account_uid: str):
 
             existing = db.scalar(
                 select(Transaction).where(
-                    Transaction.external_id == external_id
+                    Transaction.account_id == account_id,
+                    Transaction.external_id == external_id,
                 )
             )
 
@@ -189,6 +216,7 @@ def sync_account_transactions(account_uid: str):
                 booking_date = datetime.fromisoformat(booking_date)
 
             transaction = Transaction(
+                account_id=account_id,
                 account_uid=account_uid,
                 external_id=external_id,
                 booking_date=booking_date,
@@ -212,10 +240,11 @@ def sync_all_accounts():
 
     with SessionLocal() as db:
         accounts = db.query(Account).all()
-        account_uids = [account.uid for account in accounts]
+        account_refs = [(account.id, account.uid) for account in accounts]
 
-    for account_uid in account_uids:
+    for account_id, account_uid in account_refs:
         account_result = {
+            "account_id": account_id,
             "account_uid": account_uid,
             "transactions": "pending",
             "balance": "pending",
@@ -224,6 +253,14 @@ def sync_all_accounts():
         try:
             sync_account_transactions(account_uid)
             account_result["transactions"] = "ok"
+        except UnresolvedAccountError:
+            # account_uid no resuelve a una Account lógica: no tocamos
+            # transacciones ni pedimos balance para él, y seguimos con
+            # el resto de cuentas.
+            account_result["transactions"] = "unresolved_account"
+            account_result["balance"] = "skipped_unresolved_account"
+            results.append(account_result)
+            continue
         except HTTPError as error:
             status_code = error.response.status_code if error.response else None
 
@@ -231,6 +268,8 @@ def sync_all_accounts():
                 account_result["transactions"] = "rate_limited"
             else:
                 account_result["transactions"] = "error"
+        except Exception:
+            account_result["transactions"] = "unexpected_error"
 
         try:
             balance_data = get_account_balances(account_uid)
