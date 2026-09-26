@@ -93,12 +93,7 @@ def get_accounts():
 
 @app.post("/api/sync")
 def sync_all():
-    results = sync_all_accounts()
-
-    return {
-        "status": "ok",
-        "results": results,
-    }
+    return sync_all_accounts()
     
 @app.get("/api/transactions")
 def get_transactions():

@@ -39,10 +39,97 @@ function EyeOffIcon() {
   );
 }
 
+const formatDate = (dateString) => {
+  if (!dateString) return "—";
+
+  return new Date(dateString).toLocaleDateString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+};
+
+const formatAmount = (amount, currency) => {
+  return new Intl.NumberFormat("es-ES", {
+    style: "currency",
+    currency: currency || "EUR",
+    signDisplay: "exceptZero",
+  }).format(amount);
+};
+
+const getMovementName = (transaction) =>
+  transaction.merchant || transaction.description || "Movimiento";
+
+const describeSyncResult = (syncResponse) => {
+  if (!syncResponse) return null;
+
+  if (syncResponse.status === "cooldown") {
+    const minutes = Math.max(
+      1,
+      Math.ceil((syncResponse.retry_after_seconds || 0) / 60)
+    );
+
+    return {
+      tone: "info",
+      message: `Ya se sincronizó hace poco. Podrás volver a actualizar en ${minutes} min.`,
+      banksNeedingReauth: [],
+    };
+  }
+
+  const results = syncResponse.results || [];
+
+  const banksWith = (status) => [
+    ...new Set(
+      results
+        .filter((r) => r.transactions === status || r.balance === status)
+        .map((r) => r.bank)
+    ),
+  ];
+
+  const closedSessionBanks = banksWith("closed_session");
+  const rateLimitedBanks = banksWith("rate_limited");
+
+  if (syncResponse.status === "success") {
+    return {
+      tone: "success",
+      message: "Datos actualizados.",
+      banksNeedingReauth: [],
+    };
+  }
+
+  const messages = [];
+
+  if (closedSessionBanks.length > 0) {
+    messages.push(
+      `${closedSessionBanks.join(", ")} necesita volver a conectarse.`
+    );
+  }
+
+  if (rateLimitedBanks.length > 0) {
+    messages.push(
+      `Límite temporal de ${rateLimitedBanks.join(
+        ", "
+      )} alcanzado. Se muestran los últimos datos disponibles.`
+    );
+  }
+
+  if (messages.length === 0) {
+    messages.push("Algunas cuentas no pudieron actualizarse.");
+  }
+
+  return {
+    tone: syncResponse.status === "failed" ? "error" : "warning",
+    message: messages.join(" "),
+    banksNeedingReauth: closedSessionBanks,
+  };
+};
+
 function App() {
   const [dashboard, setDashboard] = useState(null);
   const [accounts, setAccounts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
   const [privacyMode, setPrivacyMode] = useState(
     () => localStorage.getItem("privacyMode") === "true"
   );
@@ -61,6 +148,11 @@ function App() {
       .then((response) => response.json())
       .then((data) => setAccounts(data))
       .catch((error) => console.error(error));
+
+    fetch("http://127.0.0.1:8000/api/transactions")
+      .then((response) => response.json())
+      .then((data) => setTransactions(data))
+      .catch((error) => console.error(error));
   }, []);
 
 
@@ -70,9 +162,10 @@ function App() {
     setIsSyncing(true);
 
     try {
-      await fetch("http://127.0.0.1:8000/api/sync", {
+      const syncResponse = await fetch("http://127.0.0.1:8000/api/sync", {
         method: "POST",
       });
+      const syncData = await syncResponse.json();
 
       const dashboardResponse = await fetch(
         "http://127.0.0.1:8000/api/dashboard"
@@ -84,12 +177,35 @@ function App() {
       );
       const accountsData = await accountsResponse.json();
 
+      const transactionsResponse = await fetch(
+        "http://127.0.0.1:8000/api/transactions"
+      );
+      const transactionsData = await transactionsResponse.json();
+
       setDashboard(dashboardData);
       setAccounts(accountsData);
+      setTransactions(transactionsData);
+      setSyncResult(describeSyncResult(syncData));
     } catch (error) {
       console.error(error);
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  const handleReconnect = async (bank) => {
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/banks/${encodeURIComponent(bank)}/authorize`,
+        { method: "POST" }
+      );
+      const data = await response.json();
+
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      console.error(error);
     }
   };
 
@@ -100,7 +216,7 @@ function App() {
       .map((date) => new Date(date));
 
     if (dates.length === 0) {
-      return "Sin sincronizar";
+      return "sin sincronizar todavía";
     }
 
     const latestDate = new Date(
@@ -111,24 +227,24 @@ function App() {
     const diffMinutes = Math.floor(diffMs / 60000);
 
     if (diffMinutes < 1) {
-      return "Actualizado hace menos de 1 min";
+      return "hace menos de 1 min";
     }
 
     if (diffMinutes === 1) {
-      return "Actualizado hace 1 min";
+      return "hace 1 min";
     }
 
     if (diffMinutes < 60) {
-      return `Actualizado hace ${diffMinutes} min`;
+      return `hace ${diffMinutes} min`;
     }
 
     const diffHours = Math.floor(diffMinutes / 60);
 
     if (diffHours === 1) {
-      return "Actualizado hace 1 h";
+      return "hace 1 h";
     }
 
-    return `Actualizado hace ${diffHours} h`;
+    return `hace ${diffHours} h`;
   };
 
   if (!dashboard) {
@@ -182,11 +298,28 @@ function App() {
               ? `${dashboard.total_balance_eur.toFixed(2)} €`
               : "— €"}
           </h2>
-          <span>{getLastUpdatedText()}</span>
+          <span>Última actualización correcta: {getLastUpdatedText()}</span>
 
           {!hasAnyBalance && (
             <span>Saldo pendiente de sincronizar</span>
-            
+
+          )}
+
+          {syncResult && syncResult.tone !== "success" && (
+            <div className="sync-alert">
+              <span>⚠ Último intento: {syncResult.message}</span>
+
+              {syncResult.banksNeedingReauth.map((bank) => (
+                <button
+                  key={bank}
+                  type="button"
+                  className="reconnect-button"
+                  onClick={() => handleReconnect(bank)}
+                >
+                  Reconectar {bank}
+                </button>
+              ))}
+            </div>
           )}
         </section>
 
@@ -266,39 +399,34 @@ function App() {
           <div className="section-header">
             <div>
               <p className="eyebrow">Actividad</p>
-              <h2>Últimos movimientos</h2>
+              <h2>Movimientos</h2>
             </div>
           </div>
 
           <div className="transactions-card">
-            {dashboard.recent_transactions.map(
-              (transaction, index) => (
-                <div className="transaction-row" key={index}>
-                  <div>
-                    <strong>
-                      {transaction.merchant || "Sin nombre"}
-                    </strong>
-                    <span>
-                      {transaction.type || "Movimiento"}
-                    </span>
-                  </div>
-
-                  <strong
-                    className={
-                      transaction.amount >= 0
-                        ? "positive"
-                        : "negative"
-                    }
-                  >
-                    {transaction.amount > 0 ? "+" : ""}
-                    {transaction.amount.toFixed(2)}{" "}
-                    {transaction.currency}
-
-                    
-                  </strong>
-                </div>
-              )
+            {transactions.length === 0 && (
+              <p className="empty-state">Sin movimientos todavía.</p>
             )}
+
+            {transactions.map((transaction) => (
+              <div className="transaction-row" key={transaction.id}>
+                <div>
+                  <strong>{getMovementName(transaction)}</strong>
+                  <span>
+                    {formatDate(transaction.date)} ·{" "}
+                    {transaction.category || "Sin categorizar"}
+                  </span>
+                </div>
+
+                <strong
+                  className={
+                    transaction.amount >= 0 ? "positive" : "negative"
+                  }
+                >
+                  {formatAmount(transaction.amount, transaction.currency)}
+                </strong>
+              </div>
+            ))}
           </div>
         </section>
       </main>

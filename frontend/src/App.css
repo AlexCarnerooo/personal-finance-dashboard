@@ -136,6 +136,36 @@ input {
   font-size: 14px;
 }
 
+.sync-alert {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sync-alert span {
+  color: #fbbf24;
+}
+
+.reconnect-button {
+  border: 1px solid #fbbf24;
+  border-radius: 999px;
+  padding: 5px 12px;
+
+  background: transparent;
+  color: #fbbf24;
+
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reconnect-button:hover {
+  background: #fbbf24;
+  color: #111827;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -232,8 +262,16 @@ input {
 }
 
 .transactions-card {
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: 520px;
   border-radius: 18px;
+}
+
+.empty-state {
+  padding: 24px;
+  text-align: center;
+  color: #9ca3af;
 }
 
 .transaction-row {

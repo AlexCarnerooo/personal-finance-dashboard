@@ -1,4 +1,5 @@
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -235,39 +236,117 @@ def sync_account_transactions(account_uid: str):
 
         db.commit()
 
+# Revolut HUF comparte consentimiento con Revolut EUR, tiene saldo 0 y no
+# se muestra en el dashboard: se excluye del sync automático/manual para
+# no gastar accesos del consentimiento compartido en una cuenta que no se
+# usa. No se borra ni dejamos de tener su histórico.
+CURRENCIES_EXCLUDED_FROM_SYNC = {"HUF"}
+
+SYNC_COOLDOWN = timedelta(minutes=30)
+
+_last_sync_attempt_at: datetime | None = None
+_sync_lock = threading.Lock()
+
+# Categorías de error que Enable Banking nos ha devuelto realmente en este
+# proyecto. No se inventan otros codigos.
+_RATE_LIMIT_ERROR_CODE = "ASPSP_RATE_LIMIT_EXCEEDED"
+_CLOSED_SESSION_ERROR_CODE = "CLOSED_SESSION"
+
+FAILURE_STATUSES = {
+    "rate_limited",
+    "closed_session",
+    "http_error",
+    "unexpected_error",
+    "unresolved_account",
+}
+
+
+def _classify_http_error(error: HTTPError):
+    """Devuelve (categoria, status_code, error_code) a partir de un
+    HTTPError real de Enable Banking, inspeccionando status_code y el
+    cuerpo JSON cuando esté disponible."""
+
+    status_code = error.response.status_code if error.response is not None else None
+
+    error_code = None
+    if error.response is not None:
+        try:
+            body = error.response.json()
+        except ValueError:
+            body = {}
+
+        if isinstance(body, dict):
+            error_code = body.get("error") or body.get("error_name")
+
+    if error_code == _RATE_LIMIT_ERROR_CODE or status_code == 429:
+        category = "rate_limited"
+    elif error_code == _CLOSED_SESSION_ERROR_CODE or status_code == 401:
+        category = "closed_session"
+    else:
+        category = "http_error"
+
+    return category, status_code, error_code
+
+
 def sync_all_accounts():
+    global _last_sync_attempt_at
+
+    with _sync_lock:
+        now = datetime.utcnow()
+
+        if _last_sync_attempt_at is not None:
+            elapsed = (now - _last_sync_attempt_at).total_seconds()
+
+            if elapsed < SYNC_COOLDOWN.total_seconds():
+                retry_after_seconds = int(
+                    SYNC_COOLDOWN.total_seconds() - elapsed
+                )
+                return {
+                    "status": "cooldown",
+                    "retry_after_seconds": retry_after_seconds,
+                    "results": [],
+                }
+
+        # El cooldown empieza aquí: en el momento en que realmente se
+        # intenta sincronizar con los bancos, no cuando se carga el
+        # dashboard (que nunca llama a esta función).
+        _last_sync_attempt_at = now
+
     results = []
 
     with SessionLocal() as db:
         accounts = db.query(Account).all()
-        account_refs = [(account.id, account.uid) for account in accounts]
+        account_refs = [
+            (account.id, account.uid, account.bank, account.currency)
+            for account in accounts
+            if account.currency not in CURRENCIES_EXCLUDED_FROM_SYNC
+        ]
 
-    for account_id, account_uid in account_refs:
+    for account_id, account_uid, bank, currency in account_refs:
         account_result = {
             "account_id": account_id,
-            "account_uid": account_uid,
+            "bank": bank,
+            "currency": currency,
             "transactions": "pending",
             "balance": "pending",
         }
 
         try:
             sync_account_transactions(account_uid)
-            account_result["transactions"] = "ok"
+            account_result["transactions"] = "success"
         except UnresolvedAccountError:
             # account_uid no resuelve a una Account lógica: no tocamos
             # transacciones ni pedimos balance para él, y seguimos con
             # el resto de cuentas.
             account_result["transactions"] = "unresolved_account"
-            account_result["balance"] = "skipped_unresolved_account"
+            account_result["balance"] = "unresolved_account"
             results.append(account_result)
             continue
         except HTTPError as error:
-            status_code = error.response.status_code if error.response else None
-
-            if status_code == 429:
-                account_result["transactions"] = "rate_limited"
-            else:
-                account_result["transactions"] = "error"
+            category, status_code, error_code = _classify_http_error(error)
+            account_result["transactions"] = category
+            account_result["transactions_status_code"] = status_code
+            account_result["transactions_error_code"] = error_code
         except Exception:
             account_result["transactions"] = "unexpected_error"
 
@@ -294,21 +373,35 @@ def sync_all_accounts():
 
                     db.commit()
 
-                account_result["balance"] = "ok"
+                account_result["balance"] = "success"
             else:
                 account_result["balance"] = "no_data"
 
         except HTTPError as error:
-            status_code = error.response.status_code if error.response else None
-
-            if status_code == 429:
-                account_result["balance"] = "rate_limited"
-            else:
-                account_result["balance"] = "error"
+            category, status_code, error_code = _classify_http_error(error)
+            account_result["balance"] = category
+            account_result["balance_status_code"] = status_code
+            account_result["balance_error_code"] = error_code
+        except Exception:
+            account_result["balance"] = "unexpected_error"
 
         results.append(account_result)
 
-    return results
+    sub_statuses = [r["transactions"] for r in results] + [
+        r["balance"] for r in results
+    ]
+
+    if not any(status in FAILURE_STATUSES for status in sub_statuses):
+        overall_status = "success"
+    elif all(status in FAILURE_STATUSES for status in sub_statuses):
+        overall_status = "failed"
+    else:
+        overall_status = "partial"
+
+    return {
+        "status": overall_status,
+        "results": results,
+    }
 
 
 
