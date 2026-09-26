@@ -1,4 +1,5 @@
 import threading
+from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -174,6 +175,12 @@ def sync_account_transactions(account_uid: str):
     transactions = data.get("transactions", [])
 
     with SessionLocal() as db:
+        rules = (
+            db.query(CategoryRule)
+            .order_by(CategoryRule.priority.desc(), CategoryRule.id.asc())
+            .all()
+        )
+
         for tx in transactions:
             external_id = tx.get("entry_reference")
 
@@ -235,8 +242,15 @@ def sync_account_transactions(account_uid: str):
                 flow_type=flow_type,
                 status=tx.get("status"),
                 transaction_type=bank_code.get("code"),
-                category=None,
             )
+
+            # internal_transfer nunca recibe categoría de gasto/ingreso: no
+            # es una categoría financiera, es un flow_type (mismo criterio
+            # que apply_category_rules()).
+            if flow_type != "internal_transfer":
+                category = _find_matching_category(rules, transaction) or UNCATEGORIZED
+                transaction.category = category
+                transaction.category_source = "rule" if category != UNCATEGORIZED else None
 
             db.add(transaction)
 
@@ -769,3 +783,119 @@ def update_transaction(
             "rule_created_id": created_rule_id,
             "similar_updated": similar_updated,
         }
+
+
+def compute_stats():
+    """Agregados financieros sobre TODO el histórico disponible en SQLite.
+
+    Reglas financieras (no negociables, ver Fase de categorización):
+      - income:            flow_type == "income"
+      - expense:            flow_type == "expense"
+      - internal_transfer:  excluido de income y expense
+      - amount == 0:        sin efecto financiero (flow_type ya es None)
+      - gasto por categoría: SUM(abs(amount)) WHERE flow_type == "expense",
+        nunca el neto de la categoría (una categoría puede tener entradas
+        y salidas y el neto sería engañoso).
+    """
+
+    with SessionLocal() as db:
+        transactions = db.query(Transaction).all()
+
+    incomes = [tx for tx in transactions if tx.flow_type == "income"]
+    expenses = [tx for tx in transactions if tx.flow_type == "expense"]
+
+    total_income = float(sum(tx.amount for tx in incomes))
+    total_expense = float(sum(abs(tx.amount) for tx in expenses))
+
+    booking_dates = [tx.booking_date for tx in transactions if tx.booking_date]
+    period_start = min(booking_dates).date() if booking_dates else None
+    period_end = max(booking_dates).date() if booking_dates else None
+
+    expense_by_day = defaultdict(float)
+    for tx in expenses:
+        if tx.booking_date:
+            expense_by_day[tx.booking_date.date()] += float(abs(tx.amount))
+
+    expense_daily = []
+    if period_start and period_end:
+        current_day = period_start
+        while current_day <= period_end:
+            expense_daily.append(
+                {
+                    "date": current_day.isoformat(),
+                    "amount": round(expense_by_day.get(current_day, 0.0), 2),
+                }
+            )
+            current_day += timedelta(days=1)
+
+    category_totals = defaultdict(lambda: {"amount": 0.0, "count": 0})
+    for tx in expenses:
+        key = tx.category or UNCATEGORIZED
+        category_totals[key]["amount"] += float(abs(tx.amount))
+        category_totals[key]["count"] += 1
+
+    category_breakdown = sorted(
+        (
+            {"category": category, "amount": round(data["amount"], 2), "count": data["count"]}
+            for category, data in category_totals.items()
+        ),
+        key=lambda row: row["amount"],
+        reverse=True,
+    )
+
+    merchant_totals = defaultdict(lambda: {"amount": 0.0, "count": 0})
+    for tx in expenses:
+        if is_bizum(tx):
+            continue
+        name = tx.merchant_name or tx.description or "Movimiento"
+        merchant_totals[name]["amount"] += float(abs(tx.amount))
+        merchant_totals[name]["count"] += 1
+
+    top_by_amount = sorted(
+        (
+            {"name": name, "amount": round(data["amount"], 2), "count": data["count"]}
+            for name, data in merchant_totals.items()
+        ),
+        key=lambda row: row["amount"],
+        reverse=True,
+    )[:8]
+
+    top_by_frequency = sorted(
+        (
+            {"name": name, "amount": round(data["amount"], 2), "count": data["count"]}
+            for name, data in merchant_totals.items()
+        ),
+        key=lambda row: row["count"],
+        reverse=True,
+    )[:8]
+
+    bizum_sent = [tx for tx in transactions if is_bizum(tx) and tx.direction == "DBIT"]
+    bizum_received = [
+        tx for tx in transactions if is_bizum(tx) and tx.direction == "CRDT"
+    ]
+
+    uncategorized_count = sum(
+        1
+        for tx in transactions
+        if tx.flow_type != "internal_transfer" and tx.category == UNCATEGORIZED
+    )
+
+    return {
+        "period_start": period_start.isoformat() if period_start else None,
+        "period_end": period_end.isoformat() if period_end else None,
+        "total_income": round(total_income, 2),
+        "total_expense": round(total_expense, 2),
+        "expense_daily": expense_daily,
+        "category_breakdown": category_breakdown,
+        "top_merchants_by_amount": top_by_amount,
+        "top_merchants_by_frequency": top_by_frequency,
+        "bizum_sent": {
+            "count": len(bizum_sent),
+            "amount": round(float(sum(abs(tx.amount) for tx in bizum_sent)), 2),
+        },
+        "bizum_received": {
+            "count": len(bizum_received),
+            "amount": round(float(sum(abs(tx.amount) for tx in bizum_received)), 2),
+        },
+        "uncategorized_count": uncategorized_count,
+    }

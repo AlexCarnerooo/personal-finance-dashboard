@@ -1,7 +1,16 @@
 import { useEffect, useState } from "react";
 import "./App.css";
-
-const MASKED_VALUE = "•••••• €";
+import Navigation from "./components/Navigation";
+import Summary from "./views/Summary";
+import Movements from "./views/Movements";
+import Statistics from "./views/Statistics";
+import Investments from "./views/Investments";
+import {
+  fetchAllDashboardData,
+  patchTransactionCategory,
+  postAuthorizeBank,
+  postSync,
+} from "./api";
 
 function EyeIcon() {
   return (
@@ -39,35 +48,11 @@ function EyeOffIcon() {
   );
 }
 
-const formatDate = (dateString) => {
-  if (!dateString) return "—";
-
-  return new Date(dateString).toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-};
-
-const formatAmount = (amount, currency) => {
-  return new Intl.NumberFormat("es-ES", {
-    style: "currency",
-    currency: currency || "EUR",
-    signDisplay: "exceptZero",
-  }).format(amount);
-};
-
-const BIZUM_PRIVACY_PLACEHOLDER = "Bizum · ••••••••";
-
-// privacyMode && transaction.is_bizum => nunca se renderiza merchant ni
-// description (ambos pueden contener el nombre de la otra persona). Solo
-// transformación visual: no toca los datos almacenados.
-const getMovementName = (transaction, privacyMode) => {
-  if (privacyMode && transaction.is_bizum) {
-    return BIZUM_PRIVACY_PLACEHOLDER;
-  }
-
-  return transaction.merchant || transaction.description || "Movimiento";
+const VIEW_TITLES = {
+  summary: "Resumen",
+  movements: "Movimientos",
+  statistics: "Estadísticas",
+  investments: "Inversiones",
 };
 
 const describeSyncResult = (syncResponse) => {
@@ -135,11 +120,16 @@ const describeSyncResult = (syncResponse) => {
 };
 
 function App() {
+  const [activeView, setActiveView] = useState("summary");
+  const [pendingCategoryFilter, setPendingCategoryFilter] = useState(null);
+  const [reviewToken, setReviewToken] = useState(0);
+
   const [dashboard, setDashboard] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [applyToSimilarByRow, setApplyToSimilarByRow] = useState({});
+  const [stats, setStats] = useState(null);
+
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [privacyMode, setPrivacyMode] = useState(
@@ -151,57 +141,16 @@ function App() {
   }, [privacyMode]);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/dashboard")
-      .then((response) => response.json())
-      .then((data) => setDashboard(data))
-      .catch((error) => console.error(error));
-
-    fetch("http://127.0.0.1:8000/api/accounts")
-      .then((response) => response.json())
-      .then((data) => setAccounts(data))
-      .catch((error) => console.error(error));
-
-    fetch("http://127.0.0.1:8000/api/transactions")
-      .then((response) => response.json())
-      .then((data) => setTransactions(data))
-      .catch((error) => console.error(error));
-
-    fetch("http://127.0.0.1:8000/api/categories")
-      .then((response) => response.json())
-      .then((data) => setCategories(data))
+    fetchAllDashboardData()
+      .then((data) => {
+        setDashboard(data.dashboard);
+        setAccounts(data.accounts);
+        setTransactions(data.transactions);
+        setCategories(data.categories);
+        setStats(data.stats);
+      })
       .catch((error) => console.error(error));
   }, []);
-
-  const handleCategoryChange = async (transactionId, category) => {
-    const applyToSimilar = Boolean(applyToSimilarByRow[transactionId]);
-
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/api/transactions/${transactionId}/category`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category, apply_to_similar: applyToSimilar }),
-        }
-      );
-
-      if (!response.ok) {
-        console.error("No se pudo actualizar la categoría", await response.text());
-        return;
-      }
-
-      const transactionsResponse = await fetch(
-        "http://127.0.0.1:8000/api/transactions"
-      );
-      const transactionsData = await transactionsResponse.json();
-      setTransactions(transactionsData);
-
-      setApplyToSimilarByRow((prev) => ({ ...prev, [transactionId]: false }));
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
 
   const handleSync = async () => {
     if (isSyncing) return;
@@ -209,29 +158,13 @@ function App() {
     setIsSyncing(true);
 
     try {
-      const syncResponse = await fetch("http://127.0.0.1:8000/api/sync", {
-        method: "POST",
-      });
-      const syncData = await syncResponse.json();
+      const syncData = await postSync();
+      const refreshed = await fetchAllDashboardData();
 
-      const dashboardResponse = await fetch(
-        "http://127.0.0.1:8000/api/dashboard"
-      );
-      const dashboardData = await dashboardResponse.json();
-
-      const accountsResponse = await fetch(
-        "http://127.0.0.1:8000/api/accounts"
-      );
-      const accountsData = await accountsResponse.json();
-
-      const transactionsResponse = await fetch(
-        "http://127.0.0.1:8000/api/transactions"
-      );
-      const transactionsData = await transactionsResponse.json();
-
-      setDashboard(dashboardData);
-      setAccounts(accountsData);
-      setTransactions(transactionsData);
+      setDashboard(refreshed.dashboard);
+      setAccounts(refreshed.accounts);
+      setTransactions(refreshed.transactions);
+      setStats(refreshed.stats);
       setSyncResult(describeSyncResult(syncData));
     } catch (error) {
       console.error(error);
@@ -242,11 +175,7 @@ function App() {
 
   const handleReconnect = async (bank) => {
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/api/banks/${encodeURIComponent(bank)}/authorize`,
-        { method: "POST" }
-      );
-      const data = await response.json();
+      const data = await postAuthorizeBank(bank);
 
       if (data.url) {
         window.location.href = data.url;
@@ -254,6 +183,31 @@ function App() {
     } catch (error) {
       console.error(error);
     }
+  };
+
+  const handleCategoryChange = async (transactionId, category, applyToSimilar) => {
+    try {
+      await patchTransactionCategory(transactionId, category, applyToSimilar);
+      const transactionsResponse = await fetchAllDashboardData();
+      setTransactions(transactionsResponse.transactions);
+      setStats(transactionsResponse.stats);
+    } catch (error) {
+      console.error("No se pudo actualizar la categoría", error);
+    }
+  };
+
+  const handleNavigate = (viewId) => {
+    setActiveView(viewId);
+  };
+
+  // Movimientos ya no se desmonta al navegar (sus filtros viven en su
+  // propio estado y persisten durante la sesión); reviewToken es la señal
+  // para "vuelve a aplicar Sin clasificar ahora", incluso si ya estaba
+  // montado con otros filtros.
+  const handleReviewPending = () => {
+    setPendingCategoryFilter("Sin clasificar");
+    setReviewToken((token) => token + 1);
+    setActiveView("movements");
   };
 
   const getLastUpdatedText = () => {
@@ -273,23 +227,12 @@ function App() {
     const diffMs = Date.now() - latestDate.getTime();
     const diffMinutes = Math.floor(diffMs / 60000);
 
-    if (diffMinutes < 1) {
-      return "hace menos de 1 min";
-    }
-
-    if (diffMinutes === 1) {
-      return "hace 1 min";
-    }
-
-    if (diffMinutes < 60) {
-      return `hace ${diffMinutes} min`;
-    }
+    if (diffMinutes < 1) return "hace menos de 1 min";
+    if (diffMinutes === 1) return "hace 1 min";
+    if (diffMinutes < 60) return `hace ${diffMinutes} min`;
 
     const diffHours = Math.floor(diffMinutes / 60);
-
-    if (diffHours === 1) {
-      return "hace 1 h";
-    }
+    if (diffHours === 1) return "hace 1 h";
 
     return `hace ${diffHours} h`;
   };
@@ -298,16 +241,12 @@ function App() {
     return <div className="loading">Cargando...</div>;
   }
 
-  const hasAnyBalance = accounts.some(
-    (account) => account.balance !== null
-  );
-
   return (
     <div className="page">
       <header className="topbar">
         <div>
           <p className="eyebrow">Personal Finance</p>
-          <h1>Dashboard</h1>
+          <h1>{VIEW_TITLES[activeView] || "Dashboard"}</h1>
         </div>
 
         <div className="topbar-actions">
@@ -333,192 +272,45 @@ function App() {
         </div>
       </header>
 
+      <Navigation activeView={activeView} onChange={handleNavigate} />
+
       <main className="dashboard">
-        <section className="hero-card">
-          
-          <p>Patrimonio disponible</p>
+        {/* Las 4 vistas quedan siempre montadas (visibilidad por CSS) para
+            que Movimientos conserve sus filtros al navegar fuera y volver,
+            durante la sesión actual (sin localStorage). */}
+        <div hidden={activeView !== "summary"}>
+          <Summary
+            dashboard={dashboard}
+            accounts={accounts}
+            transactions={transactions}
+            stats={stats}
+            privacyMode={privacyMode}
+            syncResult={syncResult}
+            onReconnect={handleReconnect}
+            lastUpdatedText={getLastUpdatedText()}
+            onReviewPending={handleReviewPending}
+          />
+        </div>
 
-          <h2>
-            {privacyMode
-              ? MASKED_VALUE
-              : hasAnyBalance
-              ? `${dashboard.total_balance_eur.toFixed(2)} €`
-              : "— €"}
-          </h2>
-          <span>Última actualización correcta: {getLastUpdatedText()}</span>
+        <div hidden={activeView !== "movements"}>
+          <Movements
+            transactions={transactions}
+            categories={categories}
+            accounts={accounts}
+            privacyMode={privacyMode}
+            onCategoryChange={handleCategoryChange}
+            initialCategoryFilter={pendingCategoryFilter}
+            reviewToken={reviewToken}
+          />
+        </div>
 
-          {!hasAnyBalance && (
-            <span>Saldo pendiente de sincronizar</span>
+        <div hidden={activeView !== "statistics"}>
+          <Statistics stats={stats} privacyMode={privacyMode} />
+        </div>
 
-          )}
-
-          {syncResult && syncResult.tone !== "success" && (
-            <div className="sync-alert">
-              <span>⚠ Último intento: {syncResult.message}</span>
-
-              {syncResult.banksNeedingReauth.map((bank) => (
-                <button
-                  key={bank}
-                  type="button"
-                  className="reconnect-button"
-                  onClick={() => handleReconnect(bank)}
-                >
-                  Reconectar {bank}
-                </button>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="metrics-grid">
-          <div className="metric-card">
-            <p>Ingresos</p>
-            <strong className="positive">
-              {privacyMode
-                ? MASKED_VALUE
-                : `+${dashboard.monthly_income.toFixed(2)} €`}
-            </strong>
-            <span>Este mes</span>
-          </div>
-
-          <div className="metric-card">
-            <p>Gastos</p>
-            <strong className="negative">
-              -{dashboard.monthly_expenses.toFixed(2)} €
-            </strong>
-            <span>Este mes</span>
-          </div>
-
-          <div className="metric-card">
-            <p>Balance mensual</p>
-            <strong
-              className={
-                dashboard.monthly_net >= 0
-                  ? "positive"
-                  : "negative"
-              }
-            >
-              {privacyMode
-                ? MASKED_VALUE
-                : `${dashboard.monthly_net.toFixed(2)} €`}
-            </strong>
-            <span>Ingresos − gastos</span>
-          </div>
-        </section>
-
-        <section>
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Cuentas</p>
-              <h2>Mis cuentas</h2>
-            </div>
-          </div>
-
-          <div className="accounts-grid">
-            {accounts
-              .filter((account) => account.currency !== "HUF")
-              .map((account) => (
-              <article className="account-card" key={account.id}>
-                <div className="account-top">
-                  <strong>{account.bank}</strong>
-                  <span>{account.currency}</span>
-                </div>
-
-                <div className="account-balance">
-                  {privacyMode
-                    ? MASKED_VALUE
-                    : account.balance !== null
-                    ? `${account.balance.toFixed(2)} ${account.currency}`
-                    : "—"}
-                </div>
-
-                <p>
-                  {account.balance_updated_at
-                    ? "Saldo sincronizado"
-                    : "Pendiente de sincronizar"}
-                </p>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="transactions-section">
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Actividad</p>
-              <h2>Movimientos</h2>
-            </div>
-          </div>
-
-          <div className="transactions-card">
-            {transactions.length === 0 && (
-              <p className="empty-state">Sin movimientos todavía.</p>
-            )}
-
-            {transactions.map((transaction) => (
-              <div className="transaction-row" key={transaction.id}>
-                <div>
-                  <strong>
-                    {getMovementName(transaction, privacyMode)}
-                    {transaction.is_bizum && (
-                      <span className="bizum-tag">Bizum</span>
-                    )}
-                  </strong>
-
-                  <span className="transaction-meta">
-                    {formatDate(transaction.date)}
-                    {" · "}
-                    {transaction.flow_type === "internal_transfer" ? (
-                      "Transferencia interna"
-                    ) : (
-                      <span className="category-control">
-                        <select
-                          value={transaction.category || ""}
-                          onChange={(event) =>
-                            handleCategoryChange(
-                              transaction.id,
-                              event.target.value
-                            )
-                          }
-                        >
-                          {categories.map((category) => (
-                            <option key={category} value={category}>
-                              {category}
-                            </option>
-                          ))}
-                        </select>
-
-                        <label className="apply-similar-label">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(
-                              applyToSimilarByRow[transaction.id]
-                            )}
-                            onChange={(event) =>
-                              setApplyToSimilarByRow((prev) => ({
-                                ...prev,
-                                [transaction.id]: event.target.checked,
-                              }))
-                            }
-                          />
-                          Aplicar también a movimientos similares
-                        </label>
-                      </span>
-                    )}
-                  </span>
-                </div>
-
-                <strong
-                  className={
-                    transaction.amount >= 0 ? "positive" : "negative"
-                  }
-                >
-                  {formatAmount(transaction.amount, transaction.currency)}
-                </strong>
-              </div>
-            ))}
-          </div>
-        </section>
+        <div hidden={activeView !== "investments"}>
+          <Investments />
+        </div>
       </main>
     </div>
   );

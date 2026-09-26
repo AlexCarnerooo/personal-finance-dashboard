@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from backend.services import (
     CATEGORIES,
+    compute_stats,
     is_bizum,
     save_connection,
     sync_all_accounts,
@@ -107,6 +108,11 @@ def get_categories():
     return list(CATEGORIES)
 
 
+@app.get("/api/stats")
+def get_stats():
+    return compute_stats()
+
+
 @app.get("/api/transactions")
 def get_transactions():
     with SessionLocal() as db:
@@ -116,10 +122,15 @@ def get_transactions():
             .all()
         )
 
+        bank_by_account_id = {
+            account.id: account.bank for account in db.query(Account).all()
+        }
+
         return [
             {
                 "id": tx.id,
-                "account_uid": tx.account_uid,
+                "account_id": tx.account_id,
+                "bank": bank_by_account_id.get(tx.account_id),
                 "date": tx.booking_date,
                 "amount": float(tx.amount),
                 "currency": tx.currency,
