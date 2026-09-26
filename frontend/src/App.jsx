@@ -57,8 +57,18 @@ const formatAmount = (amount, currency) => {
   }).format(amount);
 };
 
-const getMovementName = (transaction) =>
-  transaction.merchant || transaction.description || "Movimiento";
+const BIZUM_PRIVACY_PLACEHOLDER = "Bizum · ••••••••";
+
+// privacyMode && transaction.is_bizum => nunca se renderiza merchant ni
+// description (ambos pueden contener el nombre de la otra persona). Solo
+// transformación visual: no toca los datos almacenados.
+const getMovementName = (transaction, privacyMode) => {
+  if (privacyMode && transaction.is_bizum) {
+    return BIZUM_PRIVACY_PLACEHOLDER;
+  }
+
+  return transaction.merchant || transaction.description || "Movimiento";
+};
 
 const describeSyncResult = (syncResponse) => {
   if (!syncResponse) return null;
@@ -449,7 +459,7 @@ function App() {
               <div className="transaction-row" key={transaction.id}>
                 <div>
                   <strong>
-                    {getMovementName(transaction)}
+                    {getMovementName(transaction, privacyMode)}
                     {transaction.is_bizum && (
                       <span className="bizum-tag">Bizum</span>
                     )}
