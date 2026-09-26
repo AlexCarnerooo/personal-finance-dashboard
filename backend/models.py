@@ -111,10 +111,37 @@ class Transaction(Base):
     transaction_type: Mapped[str | None] = mapped_column(String, nullable=True)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # "manual" | "rule" | None. Protege una categoría puesta a mano de que
+    # una regla automática la sobrescriba.
+    category_source: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # "manual" | None. flow_type normalmente lo calcula get_flow_type(); si
+    # la heurística se equivoca (p. ej. una nómina que llega con el propio
+    # nombre del titular), se corrige a mano y queda protegida aquí.
+    flow_type_source: Mapped[str | None] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
     )
+
+
+class CategoryRule(Base):
+    __tablename__ = "category_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    pattern: Mapped[str] = mapped_column(String)
+    match_type: Mapped[str] = mapped_column(String)  # contains|exact|starts_with
+    field: Mapped[str] = mapped_column(String)  # merchant_name|description|any
+    category: Mapped[str] = mapped_column(String, index=True)
+    priority: Mapped[int] = mapped_column(default=0)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+
 
 '''class Balance(Base):
     __tablename__ = "balances"

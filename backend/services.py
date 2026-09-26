@@ -10,7 +10,13 @@ from backend.enable_banking import (
     get_account_transactions,
     get_session,
 )
-from backend.models import Account, AccountExternalId, BankConnection, Transaction
+from backend.models import (
+    Account,
+    AccountExternalId,
+    BankConnection,
+    CategoryRule,
+    Transaction,
+)
 
 from requests import HTTPError
 
@@ -501,6 +507,9 @@ def classify_transactions():
         transactions = db.query(Transaction).all()
 
         for tx in transactions:
+            if tx.flow_type_source == "manual":
+                continue
+
             tx.flow_type = get_flow_type(
                 tx.amount,
                 tx.merchant_name,
@@ -508,3 +517,255 @@ def classify_transactions():
             )
 
         db.commit()
+
+
+# Categorías iniciales de la fase de categorización. "Sin clasificar" es el
+# fallback explícito, no un estado nulo: se pueden reasignar a mano igual
+# que cualquier otra.
+CATEGORIES = (
+    "Restauración",
+    "Comida trabajo",
+    "Supermercado",
+    "Gasolina",
+    "Ocio",
+    "Transporte",
+    "Compras",
+    "Suscripciones",
+    "Deporte",
+    "Salud",
+    "Vivienda",
+    "Ingresos",
+    "Otros",
+    "Sin clasificar",
+)
+
+UNCATEGORIZED = "Sin clasificar"
+
+VALID_FLOW_TYPES = {"income", "expense", "internal_transfer"}
+
+# Reglas iniciales basadas exclusivamente en los patrones reales encontrados
+# en las 102 transacciones (ver análisis previo). "Eess" tiene prioridad más
+# alta que cualquier futura regla de supermercado por marca (ej. "alcampo"),
+# para que "Eess Alcampo Ferrol" siga siendo Gasolina y no Supermercado.
+INITIAL_CATEGORY_RULES = [
+    {"pattern": "eess", "field": "any", "category": "Gasolina", "priority": 100},
+    {"pattern": "plenergy", "field": "merchant_name", "category": "Gasolina", "priority": 50},
+    {"pattern": "mercadona", "field": "merchant_name", "category": "Supermercado", "priority": 50},
+    {"pattern": "gadis", "field": "merchant_name", "category": "Supermercado", "priority": 50},
+    {"pattern": "carniceria", "field": "merchant_name", "category": "Supermercado", "priority": 50},
+    {"pattern": "audasa", "field": "merchant_name", "category": "Transporte", "priority": 50},
+    {"pattern": "fourvenues", "field": "merchant_name", "category": "Ocio", "priority": 50},
+    {"pattern": "pantin classic", "field": "merchant_name", "category": "Ocio", "priority": 50},
+    {"pattern": "anthropic", "field": "merchant_name", "category": "Suscripciones", "priority": 50},
+    {"pattern": "apple.com", "field": "merchant_name", "category": "Suscripciones", "priority": 50},
+    {"pattern": "apotheka", "field": "merchant_name", "category": "Salud", "priority": 50},
+    {"pattern": "barberia", "field": "merchant_name", "category": "Salud", "priority": 50},
+    {"pattern": "mas que envios", "field": "merchant_name", "category": "Compras", "priority": 50},
+    {"pattern": "cashphone", "field": "merchant_name", "category": "Comida trabajo", "priority": 50},
+    {"pattern": "beone", "field": "merchant_name", "category": "Deporte", "priority": 50},
+    {"pattern": "la chalana", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "restaurante fer", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "oilbar", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "sultan kebab", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "bar la biela", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "golden", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "el estrella", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "comer sano mola", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "el colonial", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "catering", "field": "merchant_name", "category": "Restauración", "priority": 50},
+    {"pattern": "kiwi bar", "field": "merchant_name", "category": "Restauración", "priority": 50},
+]
+
+
+def is_bizum(transaction: Transaction) -> bool:
+    """Bizum es un tipo/método de movimiento, no una categoría financiera:
+    se detecta a partir del texto, no se guarda como columna propia."""
+
+    text = f"{transaction.merchant_name or ''} {transaction.description or ''}"
+    return "bizum" in text.lower()
+
+
+def seed_initial_category_rules():
+    """Inserta las reglas iniciales si no existen ya (idempotente: no
+    duplica filas si se llama más de una vez)."""
+
+    created = 0
+
+    with SessionLocal() as db:
+        for rule_data in INITIAL_CATEGORY_RULES:
+            existing = db.scalar(
+                select(CategoryRule).where(
+                    CategoryRule.pattern == rule_data["pattern"],
+                    CategoryRule.field == rule_data["field"],
+                    CategoryRule.category == rule_data["category"],
+                )
+            )
+
+            if existing:
+                continue
+
+            db.add(
+                CategoryRule(
+                    pattern=rule_data["pattern"],
+                    match_type="contains",
+                    field=rule_data["field"],
+                    category=rule_data["category"],
+                    priority=rule_data["priority"],
+                )
+            )
+            created += 1
+
+        db.commit()
+
+    return created
+
+
+def _rule_field_value(transaction: Transaction, field: str) -> str:
+    if field == "merchant_name":
+        return transaction.merchant_name or ""
+
+    if field == "description":
+        return transaction.description or ""
+
+    return f"{transaction.merchant_name or ''} {transaction.description or ''}"
+
+
+def _rule_matches(rule: CategoryRule, transaction: Transaction) -> bool:
+    value = _rule_field_value(transaction, rule.field).lower()
+    pattern = rule.pattern.lower()
+
+    if rule.match_type == "exact":
+        return value == pattern
+
+    if rule.match_type == "starts_with":
+        return value.startswith(pattern)
+
+    return pattern in value
+
+
+def _find_matching_category(rules: list[CategoryRule], transaction: Transaction):
+    for rule in rules:
+        if _rule_matches(rule, transaction):
+            return rule.category
+
+    return None
+
+
+def apply_category_rules():
+    """Aplica las CategoryRule vigentes a las transacciones que no tengan
+    categoría manual. internal_transfer nunca recibe una categoría de
+    gasto/ingreso: no es una categoría financiera, es un flow_type."""
+
+    with SessionLocal() as db:
+        rules = (
+            db.query(CategoryRule)
+            .order_by(CategoryRule.priority.desc(), CategoryRule.id.asc())
+            .all()
+        )
+
+        transactions = (
+            db.query(Transaction)
+            .filter(Transaction.flow_type.is_distinct_from("internal_transfer"))
+            .filter(Transaction.category_source.is_distinct_from("manual"))
+            .all()
+        )
+
+        updated = 0
+
+        for tx in transactions:
+            category = _find_matching_category(rules, tx) or UNCATEGORIZED
+            source = "rule" if category != UNCATEGORIZED else None
+
+            if tx.category != category or tx.category_source != source:
+                tx.category = category
+                tx.category_source = source
+                updated += 1
+
+        db.commit()
+
+    return updated
+
+
+def update_transaction(
+    transaction_id: int,
+    category: str | None = None,
+    flow_type: str | None = None,
+    apply_to_similar: bool = False,
+):
+    """Backend de la edición manual: cambia categoría y/o flow_type de una
+    Transaction, marca su origen como manual (protegido de reglas futuras),
+    y opcionalmente crea una CategoryRule reutilizable a partir de ella,
+    aplicándola de inmediato a otras transacciones compatibles que no
+    tengan ya una categoría manual."""
+
+    if category is not None and category not in CATEGORIES:
+        raise ValueError(f"Categoría desconocida: {category}")
+
+    if flow_type is not None and flow_type not in VALID_FLOW_TYPES:
+        raise ValueError(f"flow_type desconocido: {flow_type}")
+
+    with SessionLocal() as db:
+        transaction = db.get(Transaction, transaction_id)
+
+        if not transaction:
+            raise ValueError(f"Transaction {transaction_id} no existe")
+
+        created_rule_id = None
+        similar_updated = 0
+
+        if category is not None:
+            transaction.category = category
+            transaction.category_source = "manual"
+
+            if apply_to_similar:
+                pattern_source = transaction.merchant_name or transaction.description
+
+                if pattern_source:
+                    field = "merchant_name" if transaction.merchant_name else "description"
+
+                    rule = CategoryRule(
+                        pattern=pattern_source,
+                        match_type="exact",
+                        field=field,
+                        category=category,
+                        priority=0,
+                    )
+                    db.add(rule)
+                    db.flush()
+                    created_rule_id = rule.id
+
+                    candidates = (
+                        db.query(Transaction)
+                        .filter(Transaction.id != transaction.id)
+                        .filter(
+                            Transaction.flow_type.is_distinct_from(
+                                "internal_transfer"
+                            )
+                        )
+                        .filter(
+                            Transaction.category_source.is_distinct_from("manual")
+                        )
+                        .all()
+                    )
+
+                    for other in candidates:
+                        if _rule_matches(rule, other):
+                            other.category = category
+                            other.category_source = "rule"
+                            similar_updated += 1
+
+        if flow_type is not None:
+            transaction.flow_type = flow_type
+            transaction.flow_type_source = "manual"
+
+        db.commit()
+
+        return {
+            "id": transaction.id,
+            "category": transaction.category,
+            "category_source": transaction.category_source,
+            "flow_type": transaction.flow_type,
+            "flow_type_source": transaction.flow_type_source,
+            "rule_created_id": created_rule_id,
+            "similar_updated": similar_updated,
+        }

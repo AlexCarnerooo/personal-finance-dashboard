@@ -1,5 +1,12 @@
-from fastapi import FastAPI, Query
-from backend.services import save_connection, sync_all_accounts
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+from backend.services import (
+    CATEGORIES,
+    is_bizum,
+    save_connection,
+    sync_all_accounts,
+    update_transaction,
+)
 from backend.enable_banking import create_session, start_authorization
 
 from backend.database import SessionLocal
@@ -95,6 +102,11 @@ def get_accounts():
 def sync_all():
     return sync_all_accounts()
     
+@app.get("/api/categories")
+def get_categories():
+    return list(CATEGORIES)
+
+
 @app.get("/api/transactions")
 def get_transactions():
     with SessionLocal() as db:
@@ -117,9 +129,31 @@ def get_transactions():
                 "status": tx.status,
                 "type": tx.transaction_type,
                 "category": tx.category,
+                "category_source": tx.category_source,
+                "flow_type": tx.flow_type,
+                "is_bizum": is_bizum(tx),
             }
             for tx in transactions
         ]
+
+
+class TransactionCategoryUpdate(BaseModel):
+    category: str
+    apply_to_similar: bool = False
+
+
+@app.patch("/api/transactions/{transaction_id}/category")
+def patch_transaction_category(
+    transaction_id: int, payload: TransactionCategoryUpdate
+):
+    try:
+        return update_transaction(
+            transaction_id,
+            category=payload.category,
+            apply_to_similar=payload.apply_to_similar,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
 
 
 @app.get("/api/dashboard")

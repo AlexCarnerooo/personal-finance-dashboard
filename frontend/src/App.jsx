@@ -128,6 +128,8 @@ function App() {
   const [dashboard, setDashboard] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [applyToSimilarByRow, setApplyToSimilarByRow] = useState({});
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState(null);
   const [privacyMode, setPrivacyMode] = useState(
@@ -153,7 +155,42 @@ function App() {
       .then((response) => response.json())
       .then((data) => setTransactions(data))
       .catch((error) => console.error(error));
+
+    fetch("http://127.0.0.1:8000/api/categories")
+      .then((response) => response.json())
+      .then((data) => setCategories(data))
+      .catch((error) => console.error(error));
   }, []);
+
+  const handleCategoryChange = async (transactionId, category) => {
+    const applyToSimilar = Boolean(applyToSimilarByRow[transactionId]);
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:8000/api/transactions/${transactionId}/category`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category, apply_to_similar: applyToSimilar }),
+        }
+      );
+
+      if (!response.ok) {
+        console.error("No se pudo actualizar la categoría", await response.text());
+        return;
+      }
+
+      const transactionsResponse = await fetch(
+        "http://127.0.0.1:8000/api/transactions"
+      );
+      const transactionsData = await transactionsResponse.json();
+      setTransactions(transactionsData);
+
+      setApplyToSimilarByRow((prev) => ({ ...prev, [transactionId]: false }));
+    } catch (error) {
+      console.error(error);
+    }
+  };
 
 
   const handleSync = async () => {
@@ -411,10 +448,53 @@ function App() {
             {transactions.map((transaction) => (
               <div className="transaction-row" key={transaction.id}>
                 <div>
-                  <strong>{getMovementName(transaction)}</strong>
-                  <span>
-                    {formatDate(transaction.date)} ·{" "}
-                    {transaction.category || "Sin categorizar"}
+                  <strong>
+                    {getMovementName(transaction)}
+                    {transaction.is_bizum && (
+                      <span className="bizum-tag">Bizum</span>
+                    )}
+                  </strong>
+
+                  <span className="transaction-meta">
+                    {formatDate(transaction.date)}
+                    {" · "}
+                    {transaction.flow_type === "internal_transfer" ? (
+                      "Transferencia interna"
+                    ) : (
+                      <span className="category-control">
+                        <select
+                          value={transaction.category || ""}
+                          onChange={(event) =>
+                            handleCategoryChange(
+                              transaction.id,
+                              event.target.value
+                            )
+                          }
+                        >
+                          {categories.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+
+                        <label className="apply-similar-label">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(
+                              applyToSimilarByRow[transaction.id]
+                            )}
+                            onChange={(event) =>
+                              setApplyToSimilarByRow((prev) => ({
+                                ...prev,
+                                [transaction.id]: event.target.checked,
+                              }))
+                            }
+                          />
+                          Aplicar también a movimientos similares
+                        </label>
+                      </span>
+                    )}
                   </span>
                 </div>
 
