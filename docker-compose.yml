@@ -1,0 +1,25 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    # Sin "ports": solo alcanzable por "web" dentro de la red interna de
+    # Compose, nunca publicado hacia el host.
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+      - ./.env:/app/.env:ro
+    working_dir: /app
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    # Publicado SOLO en la IP Tailscale de esta máquina, nunca en 0.0.0.0.
+    # Confirmar que sigue siendo la IP vigente antes de desplegar.
+    ports:
+      - "100.102.7.104:8080:80"

@@ -1,7 +1,8 @@
-const BASE_URL = "http://127.0.0.1:8000";
-
+// Rutas relativas al mismo origen que sirve el frontend: en desarrollo,
+// Vite las redirige al backend (ver vite.config.js); en producción,
+// backend y frontend se sirven bajo el mismo origen.
 const getJson = async (path) => {
-  const response = await fetch(`${BASE_URL}${path}`);
+  const response = await fetch(path);
   return response.json();
 };
 
@@ -12,13 +13,13 @@ export const fetchCategories = () => getJson("/api/categories");
 export const fetchStats = () => getJson("/api/stats");
 
 export const postSync = async () => {
-  const response = await fetch(`${BASE_URL}/api/sync`, { method: "POST" });
+  const response = await fetch("/api/sync", { method: "POST" });
   return response.json();
 };
 
 export const postAuthorizeBank = async (bank) => {
   const response = await fetch(
-    `${BASE_URL}/api/banks/${encodeURIComponent(bank)}/authorize`,
+    `/api/banks/${encodeURIComponent(bank)}/authorize`,
     { method: "POST" }
   );
   return response.json();
@@ -30,7 +31,7 @@ export const patchTransactionCategory = async (
   applyToSimilar
 ) => {
   const response = await fetch(
-    `${BASE_URL}/api/transactions/${transactionId}/category`,
+    `/api/transactions/${transactionId}/category`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

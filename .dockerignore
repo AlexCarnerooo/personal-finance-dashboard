@@ -1,0 +1,24 @@
+# Datos, secretos y configuración: nunca dentro de una imagen.
+data/
+secrets/
+.env
+*.pem
+*.key
+
+logs/
+.backend.pid
+.frontend.pid
+.ngrok.pid
+
+.git/
+.github/
+
+__pycache__/
+*.pyc
+.venv/
+
+frontend/node_modules/
+frontend/dist/
+
+# Binario suelto sin relación con el build (arquitectura amd64, no ARM64).
+cloudflared-linux-amd64.deb
